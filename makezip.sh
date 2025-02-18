@@ -44,6 +44,8 @@ cp install_dependencies.bat "$TEMPDIR/"
 cp install_dependencies.sh "$TEMPDIR/"
 cp requirements.txt "$TEMPDIR/"
 cp README.md "$TEMPDIR/"
+cp run.bat "$TEMPDIR/"
+
 
 # Create empty directories
 mkdir -p "$TEMPDIR/converted_files"

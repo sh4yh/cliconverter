@@ -1,6 +1,11 @@
 import os
 import re
 import subprocess
+import time
+import select
+import platform
+import sys
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
 from tqdm.auto import tqdm
@@ -317,54 +322,140 @@ class MediaConverter:
             # Print the command for debugging
             print(f"\nExecuting FFmpeg command:\n{' '.join(cmd)}\n")
             
-            # Start the conversion process
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
-            )
-
-            # Initialize progress bar with enhanced format
-            with tqdm(total=100,
-                     desc=f"Converting {Path(input_path).name}",
-                     unit="%",
-                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]",
-                     dynamic_ncols=True,
-                     position=1,
-                     leave=False) as pbar:
+            # Start the conversion process with shell=True on Windows
+            is_windows = platform.system().lower() == "windows"
+            
+            if is_windows:
+                # Ensure proper encoding for Windows
+                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stderr.reconfigure(encoding='utf-8')
                 
-                current_time = 0
-                last_progress = 0
-                error_output = []
+                # For Windows, use a temporary file for progress monitoring
+                progress_file = tempfile.NamedTemporaryFile(delete=False, suffix='.txt')
+                progress_path = progress_file.name
+                progress_file.close()
+                
+                # Use string command for Windows with proper quoting
+                cmd_str = ' '.join(f'"{x}"' if ' ' in str(x) or any(c in str(x) for c in '()[]{}$&^=;!\'`~') else str(x) for x in cmd)
+                # Replace pipe:1 with the temporary file path
+                cmd_str = cmd_str.replace('pipe:1', f'"{progress_path}"')
+                
+                process = subprocess.Popen(
+                    cmd_str,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=True,
+                    universal_newlines=True,
+                    bufsize=1,
+                    encoding='utf-8',
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
 
-                # Monitor progress and capture error output
-                while True:
-                    # Read from stdout for progress
-                    stdout_line = process.stdout.readline()
-                    if stdout_line:
-                        if stdout_line.startswith('out_time='):
-                            time_str = stdout_line.split('=')[1].strip()
-                            current_time = self._parse_time(time_str) or current_time
-                            if duration > 0:
-                                progress = min(100, int(100 * current_time / duration))
-                                if progress > last_progress:
-                                    pbar.update(progress - last_progress)
-                                    last_progress = progress
-                                    pbar.refresh()
+                # Initialize progress bar with enhanced format
+                with tqdm(total=100,
+                         desc=f"Converting {Path(input_path).name}",
+                         unit="%",
+                         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]",
+                         dynamic_ncols=True,
+                         position=1,
+                         leave=False) as pbar:
                     
-                    # Read from stderr for errors
-                    stderr_line = process.stderr.readline()
-                    if stderr_line:
-                        error_output.append(stderr_line.strip())
+                    current_time = 0
+                    last_progress = 0
+                    error_output = []
+                    last_size = 0
+
+                    while process.poll() is None:
+                        # Read progress from the temporary file
+                        try:
+                            if os.path.exists(progress_path):
+                                current_size = os.path.getsize(progress_path)
+                                if current_size > last_size:
+                                    with open(progress_path, 'r', encoding='utf-8') as f:
+                                        f.seek(last_size)
+                                        for line in f:
+                                            if line.startswith('out_time='):
+                                                time_str = line.split('=')[1].strip()
+                                                current_time = self._parse_time(time_str) or current_time
+                                                if duration > 0:
+                                                    progress = min(100, int(100 * current_time / duration))
+                                                    if progress > last_progress:
+                                                        pbar.update(progress - last_progress)
+                                                        last_progress = progress
+                                                        pbar.refresh()
+                                    last_size = current_size
+                        except Exception as e:
+                            print(f"Warning: Error reading progress file: {e}")
+                        
+                        # Check stderr for errors
+                        stderr_line = process.stderr.readline()
+                        if stderr_line:
+                            error_output.append(stderr_line.strip())
+                        
+                        # Add a small sleep to prevent CPU overload
+                        time.sleep(0.1)
+
+                # Clean up the temporary file
+                try:
+                    os.unlink(progress_path)
+                except:
+                    pass
+
+            else:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=False,
+                    universal_newlines=True,
+                    bufsize=1
+                )
+
+                # Initialize progress bar with enhanced format
+                with tqdm(total=100,
+                         desc=f"Converting {Path(input_path).name}",
+                         unit="%",
+                         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}% [{elapsed}<{remaining}]",
+                         dynamic_ncols=True,
+                         position=1,
+                         leave=False) as pbar:
                     
-                    # Check if process has finished
-                    if process.poll() is not None:
-                        break
+                    current_time = 0
+                    last_progress = 0
+                    error_output = []
+
+                    while process.poll() is None:
+                        # Unix systems can use select
+                        reads = [process.stdout.fileno(), process.stderr.fileno()]
+                        ret = select.select(reads, [], [], 1.0)
+
+                        for fd in ret[0]:
+                            if fd == process.stdout.fileno():
+                                stdout_line = process.stdout.readline()
+                                if stdout_line.startswith('out_time='):
+                                    time_str = stdout_line.split('=')[1].strip()
+                                    current_time = self._parse_time(time_str) or current_time
+                                    if duration > 0:
+                                        progress = min(100, int(100 * current_time / duration))
+                                        if progress > last_progress:
+                                            pbar.update(progress - last_progress)
+                                            last_progress = progress
+                                            pbar.refresh()
+                            elif fd == process.stderr.fileno():
+                                stderr_line = process.stderr.readline()
+                                if stderr_line:
+                                    error_output.append(stderr_line.strip())
+
+                        # Add a small sleep to prevent CPU overload
+                        time.sleep(0.1)
 
             # Get the return code
             return_code = process.wait()
+
+            # Capture any remaining stderr output
+            remaining_stderr = process.stderr.read()
+            if remaining_stderr:
+                error_output.append(remaining_stderr)
 
             # If conversion failed, raise an error with the captured output
             if return_code != 0:

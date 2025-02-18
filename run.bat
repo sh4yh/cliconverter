@@ -1,3 +1,4 @@
 @echo off
 cd /d "%~dp0"
-cmd /k "venv\Scripts\activate.bat && python src\cli.py" 
+cmd /k "call venv\Scripts\activate.bat"
+cmd /k "python src\cli.py" 
