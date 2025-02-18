@@ -43,7 +43,7 @@
                 "pixel_format": "yuv420p",
                 "gop": "60",
                 "preset": "slow",
-                "tune": "film",
+                "tune": "animation",
                 "speed_control": "1x"
             },
             "audio": {
@@ -65,7 +65,7 @@
                 "pixel_format": "yuv420p",
                 "gop": "60",
                 "preset": "slow",
-                "tune": "film",
+                "tune": "animation",
                 "speed_control": "1x"
             },
             "audio": {
@@ -87,7 +87,7 @@
                 "pixel_format": "yuv420p",
                 "gop": "60",
                 "preset": "medium",
-                "tune": "film",
+                "tune": "fastdecode",
                 "speed_control": "1x"
             },
             "audio": {
@@ -109,7 +109,7 @@
                 "pixel_format": "yuv420p",
                 "gop": "60",
                 "preset": "slow",
-                "tune": "film",
+                "tune": "grain",
                 "speed_control": "1x"
             },
             "audio": {
@@ -131,7 +131,7 @@
                 "pixel_format": "yuv420p",
                 "gop": "60",
                 "preset": "medium",
-                "tune": "film",
+                "tune": "fastdecode",
                 "speed_control": "1.75x"
             },
             "audio": {
@@ -217,7 +217,6 @@
             "120"
         ],
         "presets": [
-            "copy",
             "ultrafast",
             "superfast",
             "veryfast",
@@ -230,16 +229,14 @@
             "placebo"
         ],
         "tune_options": [
-            "copy",
-            "film",
-            "animation",
+            "psnr",
+            "ssim",
             "grain",
-            "stillimage",
+            "zerolatency",
             "fastdecode",
-            "zerolatency"
+            "animation"
         ],
         "speed_controls": [
-            "copy",
             "0.25x",
             "0.5x",
             "0.75x",
@@ -296,7 +293,6 @@
             "7.1"
         ],
         "audio_speeds": [
-            "copy",
             "0.25x",
             "0.5x",
             "0.75x",
@@ -305,7 +301,8 @@
             "1.5x",
             "1.75x",
             "2x",
-            "4x"
+            "4x",
+            "10x"
         ],
         "containers": [
             "mp4",

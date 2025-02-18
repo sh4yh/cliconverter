@@ -320,7 +320,7 @@ class MediaConverter:
 
         try:
             # Print the command for debugging
-            print(f"\nExecuting FFmpeg command:\n{' '.join(cmd)}\n")
+            # print(f"\nExecuting FFmpeg command:\n{' '.join(cmd)}\n")
             
             # Start the conversion process with shell=True on Windows
             is_windows = platform.system().lower() == "windows"

@@ -13,6 +13,7 @@ from colorama import init, Fore, Style as ColoramaStyle
 from converter import MediaConverter
 from metadata import MetadataHandler
 from profiles import FormatProfiles
+import platform
 
 # Initialize colorama
 init()
@@ -26,6 +27,14 @@ class ConverterCLI:
     }
 
     def __init__(self):
+        """Initialize the CLI interface with proper encoding setup."""
+        # Set up proper encoding for Windows
+        if platform.system().lower() == "windows":
+            # Ensure console can handle Unicode
+            os.system("chcp 65001")
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        
         self.profiles = FormatProfiles()
         self.converter = MediaConverter(profiles=self.profiles)
         self.metadata = MetadataHandler()
@@ -38,15 +47,15 @@ class ConverterCLI:
         """Load previously selected files from temp storage."""
         if self.temp_file.exists():
             try:
-                with open(self.temp_file, 'r') as f:
+                with open(self.temp_file, 'r', encoding='utf-8') as f:
                     self.selected_files = json.load(f)
             except json.JSONDecodeError:
                 self.selected_files = []
 
     def _save_selected_files(self):
         """Save selected files to temp storage."""
-        with open(self.temp_file, 'w') as f:
-            json.dump(self.selected_files, f)
+        with open(self.temp_file, 'w', encoding='utf-8') as f:
+            json.dump(self.selected_files, f, ensure_ascii=False)
 
     def _clear_selected_files(self):
         """Clear the selected files list and temp storage."""
@@ -64,8 +73,11 @@ class ConverterCLI:
         files = []
         print("\nScanning directory for media files...")
         
+        # Convert to Path object for proper Unicode handling
+        directory_path = Path(directory)
+        
         # First, count total files for progress bar
-        total_files = sum([len(files) for _, _, files in os.walk(directory)])
+        total_files = sum([len(files) for _, _, files in os.walk(str(directory_path))])
         
         with tqdm(total=total_files, 
                  desc="Scanning directory", 
@@ -73,9 +85,10 @@ class ConverterCLI:
                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
                  dynamic_ncols=True,
                  mininterval=0.1) as pbar:
-            for root, _, filenames in os.walk(directory):
+            for root, _, filenames in os.walk(str(directory_path)):
+                root_path = Path(root)
                 for filename in filenames:
-                    file_path = os.path.join(root, filename)
+                    file_path = str(root_path / filename)
                     if self._is_supported_file(file_path):
                         files.append(file_path)
                     pbar.update(1)
@@ -90,36 +103,42 @@ class ConverterCLI:
         items = []
         choices = []
         
+        # Convert to Path object for proper Unicode handling
+        current_path = Path(current_dir)
+        parent_dir = str(current_path.parent)
+        
         # Add parent directory option
-        parent_dir = str(Path(current_dir).parent)
-        if current_dir != parent_dir:
+        if str(current_path) != parent_dir:
             items.append(("..", parent_dir))
             choices.append(Choice(value=("directory", parent_dir), name="📁 .."))
 
-        # Add directories
-        dir_choices = []
-        file_choices = []
-        
-        for item in sorted(os.listdir(current_dir)):
-            full_path = os.path.join(current_dir, item)
-            if os.path.isdir(full_path):
-                items.append((f"📁 {item}", full_path))
-                dir_choices.append(Choice(value=("directory", full_path), name=f"📁 {item}"))
+        # Add directories and files
+        try:
+            # Use Path.iterdir() for better Unicode support
+            entries = sorted(current_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            
+            dir_choices = []
+            file_choices = []
+            
+            for entry in entries:
+                if entry.is_dir():
+                    items.append((f"📁 {entry.name}", str(entry)))
+                    dir_choices.append(Choice(value=("directory", str(entry)), name=f"📁 {entry.name}"))
+                elif entry.is_file() and self._is_supported_file(str(entry)):
+                    items.append((f"📄 {entry.name}", str(entry)))
+                    file_choices.append(Choice(value=("file", str(entry)), name=f"📄 {entry.name}"))
 
-        # Add supported files
-        for item in sorted(os.listdir(current_dir)):
-            full_path = os.path.join(current_dir, item)
-            if os.path.isfile(full_path) and self._is_supported_file(full_path):
-                items.append((f"📄 {item}", full_path))
-                file_choices.append(Choice(value=("file", full_path), name=f"📄 {item}"))
+            # Combine choices with separators
+            if dir_choices:
+                choices.append(Separator("Directories"))
+                choices.extend(dir_choices)
+            if file_choices:
+                choices.append(Separator("Files"))
+                choices.extend(file_choices)
 
-        # Combine choices with separators
-        if dir_choices:
-            choices.append(Separator("Directories"))
-            choices.extend(dir_choices)
-        if file_choices:
-            choices.append(Separator("Files"))
-            choices.extend(file_choices)
+        except Exception as e:
+            print(f"\nError reading directory contents: {str(e)}")
+            return [], []
 
         print(f"\nCurrent directory: {current_dir}")
         return items, choices
@@ -502,11 +521,40 @@ class ConverterCLI:
             if action_type == "up" or action_type == "dir":
                 current_dir = value
             elif action_type == "file":
-                # Get profile name
-                name = inquirer.text(
-                    message="Enter profile name:",
-                    validate=lambda x: len(x) > 0
-                ).execute()
+                while True:
+                    # Get profile name
+                    name = inquirer.text(
+                        message="Enter profile name:",
+                        validate=lambda x: len(x) > 0
+                    ).execute()
+
+                    # Check if profile already exists
+                    existing_profiles = self.profiles.list_profiles()
+                    profile_exists = False
+                    for category in ["video", "audio"]:
+                        if category in existing_profiles and name in existing_profiles[category]:
+                            profile_exists = True
+                            break
+
+                    if profile_exists:
+                        # Ask user what to do
+                        action = inquirer.select(
+                            message=f"Profile '{name}' already exists. What would you like to do?",
+                            choices=[
+                                Choice(value="overwrite", name="🔄 Overwrite existing profile"),
+                                Choice(value="rename", name="✏️  Enter a different name"),
+                                Choice(value="cancel", name="❌ Cancel")
+                            ]
+                        ).execute()
+
+                        if action == "overwrite":
+                            break
+                        elif action == "rename":
+                            continue
+                        else:  # cancel
+                            return
+                    else:
+                        break
 
                 # Create profile
                 profile = self.converter.create_profile_from_file(value, name)

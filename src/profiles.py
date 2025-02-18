@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Union, Any
 import subprocess
 import re
+import platform
 
 class FormatProfiles:
     def __init__(self, config_path: str = "config/profiles.json"):
@@ -169,14 +170,14 @@ class FormatProfiles:
                 },
                 "schema": {
                     "video_codecs": ["copy", "libx264", "libx265", "libvpx-vp9", "mpeg4", "prores"],
-                    "resolutions": ["copy", "3840x2160", "2560x1440", "1920x1080", "1280x720", "854x480", "640x360", "custom (e.g., 720x1280)"],
+                    "resolutions": ["copy", "3840x2160", "2560x1440", "1920x1080", "1280x720", "854x480", "640x360"],
                     "video_bitrates": ["copy", "1M", "2M", "4M", "6M", "8M", "10M", "12M", "15M", "20M"],
                     "crf_values": ["copy", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28"],
                     "framerates": ["copy", "23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60"],
                     "pixel_formats": ["copy", "yuv420p", "yuv422p", "yuv444p", "rgb24", "yuv420p10le", "yuv422p10le"],
                     "gop_sizes": ["copy", "30", "60", "120"],
-                    "presets": ["copy", "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"],
-                    "tune_options": ["copy", "film", "animation", "grain", "stillimage", "fastdecode", "zerolatency"],
+                    "presets": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"],
+                    "tune_options": ["psnr", "ssim", "grain", "zerolatency", "fastdecode", "animation"],
                     "speed_controls": ["0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "4x", "10x"],
                     "audio_codecs": ["copy", "aac", "libmp3lame", "flac", "opus", "pcm_s16le", "pcm_s24le", "vorbis"],
                     "audio_bitrates": ["copy", "96k", "128k", "160k", "192k", "224k", "256k", "320k", "384k", "448k", "512k"],
@@ -189,7 +190,7 @@ class FormatProfiles:
             self._save_profiles()
         else:
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
                     self.profiles = json.load(f)
                     
                 # Update existing profiles to match new schema
@@ -225,8 +226,8 @@ class FormatProfiles:
     def _save_profiles(self):
         """Save profiles to JSON file."""
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.config_path, 'w') as f:
-            json.dump(self.profiles, f, indent=4)
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(self.profiles, f, indent=4, ensure_ascii=False)
 
     def _validate_profile(self, category: str, settings: Dict) -> bool:
         """Validate profile settings against schema."""
@@ -358,15 +359,57 @@ class FormatProfiles:
         Returns the created profile if successful, None otherwise.
         """
         try:
-            cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', 
-                  '-show_format', '-show_streams', file_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # Convert file path to Path object for proper handling
+            file_path = str(Path(file_path))
+            
+            # Handle Windows path encoding
+            is_windows = platform.system().lower() == "windows"
+            if is_windows:
+                # Ensure proper encoding for Windows paths with Unicode
+                cmd = [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    '-show_streams',
+                    file_path
+                ]
+                # Use string command for Windows
+                cmd_str = subprocess.list2cmdline(cmd)
+                result = subprocess.run(
+                    cmd_str,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    encoding='utf-8'
+                )
+            else:
+                # For Unix systems, use list form
+                cmd = [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    '-show_streams',
+                    file_path
+                ]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8'
+                )
             
             if result.returncode != 0:
-                print("Error: Failed to analyze the file with ffprobe")
+                print(f"Error: Failed to analyze the file with ffprobe. Error: {result.stderr}")
                 return None
                 
-            metadata = json.loads(result.stdout)
+            try:
+                metadata = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                print("Error: Invalid JSON output from ffprobe")
+                return None
+                
             if not metadata or 'streams' not in metadata or 'format' not in metadata:
                 print("Error: Invalid or incomplete metadata from ffprobe")
                 return None
@@ -420,7 +463,10 @@ class FormatProfiles:
                 print(f"\nFailed to create profile: validation failed")
                 return None
 
-        except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as e:
+        except subprocess.SubprocessError as e:
+            print(f"Error running ffprobe: {str(e)}")
+            return None
+        except Exception as e:
             print(f"Error creating profile: {str(e)}")
             return None
 
@@ -568,40 +614,124 @@ class FormatProfiles:
         if not profile:
             return None
             
-        cmd = ['ffmpeg', '-i', input_file]
+        # Convert paths to Path objects for proper handling
+        input_file = str(Path(input_file))
+        output_file = str(Path(output_file))
         
-        # Track if we need to combine filters
-        video_filters = []
-        audio_filters = []
-        
-        # Add video parameters
-        if category == "video" and "video" in profile:
-            video = profile["video"]
-            if video.get("codec") != "copy":
-                cmd.extend(['-c:v', video["codec"]])
-                if video.get("bitrate") != "copy":
-                    cmd.extend(['-b:v', video["bitrate"]])
-                if video.get("resolution") != "copy":
-                    cmd.extend(['-s', video["resolution"]])
-                if video.get("fps") != "copy":
-                    cmd.extend(['-r', video["fps"]])
-                if video.get("pixel_format") != "copy":
-                    cmd.extend(['-pix_fmt', video["pixel_format"]])
-                if video.get("preset") != "copy":
-                    cmd.extend(['-preset', video["preset"]])
-                if video.get("tune") != "copy":
-                    cmd.extend(['-tune', video["tune"]])
-                if video.get("speed_control", "1x") != "1x":
-                    speed = float(video["speed_control"].replace('x', ''))
-                    video_filters.append(f'setpts={1/speed}*PTS')
-            else:
-                cmd.extend(['-c:v', 'copy'])
+        is_windows = platform.system().lower() == "windows"
+        if is_windows:
+            # Use subprocess.list2cmdline for proper Windows command escaping
+            cmd = ['ffmpeg']
+            cmd.extend(['-i', input_file])
+            
+            # Track if we need to combine filters
+            video_filters = []
+            audio_filters = []
+            
+            # Add video parameters
+            if category == "video" and "video" in profile:
+                video = profile["video"]
+                if video.get("codec") != "copy":
+                    cmd.extend(['-c:v', video["codec"]])
+                    if video.get("bitrate") != "copy":
+                        cmd.extend(['-b:v', video["bitrate"]])
+                    if video.get("resolution") != "copy":
+                        cmd.extend(['-s', video["resolution"]])
+                    if video.get("fps") != "copy":
+                        cmd.extend(['-r', video["fps"]])
+                    if video.get("pixel_format") != "copy":
+                        cmd.extend(['-pix_fmt', video["pixel_format"]])
+                    if video.get("preset") != "copy":
+                        cmd.extend(['-preset', video["preset"]])
+                    if video.get("tune") != "copy":
+                        cmd.extend(['-tune', video["tune"]])
+                    if video.get("speed_control", "1x") != "1x":
+                        speed = float(video["speed_control"].replace('x', ''))
+                        video_filters.append(f'setpts={1/speed}*PTS')
+                else:
+                    cmd.extend(['-c:v', 'copy'])
 
-        # Add audio parameters
-        if "audio" in profile:
-            audio = profile["audio"]
-            if audio.get("codec") != "copy":
-                cmd.extend(['-c:a', audio["codec"]])
+            # Add audio parameters
+            if "audio" in profile:
+                audio = profile["audio"]
+                if audio.get("codec") != "copy":
+                    cmd.extend(['-c:a', audio["codec"]])
+                    if audio.get("bitrate") != "copy":
+                        cmd.extend(['-b:a', audio["bitrate"]])
+                    if audio.get("sample_rate") != "copy":
+                        cmd.extend(['-ar', audio["sample_rate"]])
+                    if audio.get("channels") != "copy":
+                        cmd.extend(['-ac', audio["channels"]])
+                    if audio.get("audio_speed", "1x") != "1x":
+                        speed = float(audio["audio_speed"].replace('x', ''))
+                        # For speeds > 2x or < 0.5x, we need to chain multiple atempo filters
+                        if speed > 2:
+                            stages = []
+                            remaining_speed = speed
+                            while remaining_speed > 2:
+                                stages.append("atempo=2.0")
+                                remaining_speed /= 2
+                            stages.append(f"atempo={remaining_speed}")
+                            audio_filters.append(','.join(stages))
+                        elif speed < 0.5:
+                            stages = []
+                            remaining_speed = speed
+                            while remaining_speed < 0.5:
+                                stages.append("atempo=0.5")
+                                remaining_speed *= 2
+                            stages.append(f"atempo={remaining_speed}")
+                            audio_filters.append(','.join(stages))
+                        else:
+                            audio_filters.append(f'atempo={speed}')
+                else:
+                    cmd.extend(['-c:a', 'copy'])
+
+            # Add filters if any
+            if video_filters:
+                cmd.extend(['-filter:v', ','.join(video_filters)])
+            if audio_filters:
+                cmd.extend(['-filter:a', ','.join(audio_filters)])
+
+            # Add output file
+            cmd.append(output_file)
+            
+            # Use list2cmdline for proper escaping
+            return subprocess.list2cmdline(cmd)
+        else:
+            cmd = ['ffmpeg', '-i', input_file]
+            
+            # Track if we need to combine filters
+            video_filters = []
+            audio_filters = []
+            
+            # Add video parameters
+            if category == "video" and "video" in profile:
+                video = profile["video"]
+                if video.get("codec") != "copy":
+                    cmd.extend(['-c:v', video["codec"]])
+                    if video.get("bitrate") != "copy":
+                        cmd.extend(['-b:v', video["bitrate"]])
+                    if video.get("resolution") != "copy":
+                        cmd.extend(['-s', video["resolution"]])
+                    if video.get("fps") != "copy":
+                        cmd.extend(['-r', video["fps"]])
+                    if video.get("pixel_format") != "copy":
+                        cmd.extend(['-pix_fmt', video["pixel_format"]])
+                    if video.get("preset") != "copy":
+                        cmd.extend(['-preset', video["preset"]])
+                    if video.get("tune") != "copy":
+                        cmd.extend(['-tune', video["tune"]])
+                    if video.get("speed_control", "1x") != "1x":
+                        speed = float(video["speed_control"].replace('x', ''))
+                        video_filters.append(f'setpts={1/speed}*PTS')
+                else:
+                    cmd.extend(['-c:v', 'copy'])
+
+            # Add audio parameters
+            if "audio" in profile:
+                audio = profile["audio"]
+                if audio.get("codec") != "copy":
+                    cmd.extend(['-c:a', audio["codec"]])
                 if audio.get("bitrate") != "copy":
                     cmd.extend(['-b:a', audio["bitrate"]])
                 if audio.get("sample_rate") != "copy":
@@ -629,16 +759,16 @@ class FormatProfiles:
                         audio_filters.append(','.join(stages))
                     else:
                         audio_filters.append(f'atempo={speed}')
-            else:
-                cmd.extend(['-c:a', 'copy'])
+                else:
+                    cmd.extend(['-c:a', 'copy'])
 
-        # Add filters if any
-        if video_filters:
-            cmd.extend(['-filter:v', ','.join(video_filters)])
-        if audio_filters:
-            cmd.extend(['-filter:a', ','.join(audio_filters)])
+            # Add filters if any
+            if video_filters:
+                cmd.extend(['-filter:v', ','.join(video_filters)])
+            if audio_filters:
+                cmd.extend(['-filter:a', ','.join(audio_filters)])
 
-        # Add output file
-        cmd.append(output_file)
-        
-        return ' '.join(cmd) 
+            # Add output file
+            cmd.append(output_file)
+            
+            return ' '.join(cmd) 
