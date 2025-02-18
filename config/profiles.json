@@ -119,6 +119,28 @@
                 "channels": "2",
                 "audio_speed": "1x"
             }
+        },
+        "Faster": {
+            "container": "mov",
+            "video": {
+                "codec": "libx264",
+                "resolution": "720x1280",
+                "bitrate": "copy",
+                "crf": "23",
+                "fps": "25",
+                "pixel_format": "yuv420p",
+                "gop": "60",
+                "preset": "medium",
+                "tune": "film",
+                "speed_control": "1.75x"
+            },
+            "audio": {
+                "codec": "aac",
+                "bitrate": "192k",
+                "sample_rate": "48000",
+                "channels": "2",
+                "audio_speed": "1.75x"
+            }
         }
     },
     "schema": {

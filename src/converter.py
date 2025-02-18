@@ -41,9 +41,55 @@ class MediaConverter:
                 str(input_file)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return float(result.stdout.strip())
+            duration_str = result.stdout.strip()
+            
+            # Handle 'N/A' or empty duration
+            if not duration_str or duration_str == 'N/A':
+                # Try alternative method using streams
+                cmd = [
+                    'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',  # Select first video stream
+                    '-show_entries', 'stream=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    str(input_file)
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                duration_str = result.stdout.strip()
+                
+                # If still no duration, try with frames and frame rate
+                if not duration_str or duration_str == 'N/A':
+                    cmd = [
+                        'ffprobe',
+                        '-v', 'error',
+                        '-select_streams', 'v:0',
+                        '-count_frames',
+                        '-show_entries', 'stream=nb_frames,r_frame_rate',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        str(input_file)
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    lines = result.stdout.strip().split('\n')
+                    if len(lines) >= 2:
+                        nb_frames = lines[0].strip()
+                        frame_rate = lines[1].strip()
+                        
+                        if nb_frames.isdigit() and '/' in frame_rate:
+                            num, den = map(float, frame_rate.split('/'))
+                            if den != 0:  # Avoid division by zero
+                                fps = num / den
+                                if fps > 0:  # Avoid division by zero
+                                    return float(nb_frames) / fps
+            
+            # Try to convert the duration string to float if we got one
+            if duration_str and duration_str != 'N/A':
+                return float(duration_str)
+                
+            # If all methods fail, return a default duration
+            return 0
+            
         except (subprocess.SubprocessError, ValueError):
-            return None
+            return 0
 
     def _parse_time(self, time_str: str) -> Optional[float]:
         """Parse FFmpeg time string into seconds."""
@@ -263,14 +309,21 @@ class MediaConverter:
         cmd.insert(1, '-progress')
         cmd.insert(2, 'pipe:1')
         cmd.insert(3, '-nostats')
+        
+        # Add overwrite flag
+        cmd.insert(1, '-y')
 
         try:
+            # Print the command for debugging
+            print(f"\nExecuting FFmpeg command:\n{' '.join(cmd)}\n")
+            
             # Start the conversion process
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True
+                universal_newlines=True,
+                bufsize=1
             )
 
             # Initialize progress bar with enhanced format
@@ -281,31 +334,57 @@ class MediaConverter:
                      dynamic_ncols=True,
                      position=1,
                      leave=False) as pbar:
+                
+                current_time = 0
+                last_progress = 0
+                error_output = []
 
-                # Monitor progress
+                # Monitor progress and capture error output
                 while True:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
+                    # Read from stdout for progress
+                    stdout_line = process.stdout.readline()
+                    if stdout_line:
+                        if stdout_line.startswith('out_time='):
+                            time_str = stdout_line.split('=')[1].strip()
+                            current_time = self._parse_time(time_str) or current_time
+                            if duration > 0:
+                                progress = min(100, int(100 * current_time / duration))
+                                if progress > last_progress:
+                                    pbar.update(progress - last_progress)
+                                    last_progress = progress
+                                    pbar.refresh()
                     
-                    if "out_time_ms=" in line:
-                        time_ms = int(line.split("=")[1])
-                        progress = min(100, int((time_ms / 1000000) / duration * 100))
-                        pbar.n = progress
-                        pbar.refresh()
+                    # Read from stderr for errors
+                    stderr_line = process.stderr.readline()
+                    if stderr_line:
+                        error_output.append(stderr_line.strip())
+                    
+                    # Check if process has finished
+                    if process.poll() is not None:
+                        break
 
-            # Get the return code and output
+            # Get the return code
             return_code = process.wait()
-            stderr = process.stderr.read()
 
+            # If conversion failed, raise an error with the captured output
             if return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd, stderr)
+                error_msg = "\n".join(error_output)
+                raise subprocess.CalledProcessError(return_code, cmd, stderr=error_msg)
+
+            # Check if output file exists and has size greater than 0
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                error_msg = "\n".join(error_output)
+                raise subprocess.SubprocessError(f"FFmpeg failed to create output file. Error output:\n{error_msg}")
 
             return subprocess.CompletedProcess(cmd, return_code)
 
         except subprocess.CalledProcessError as e:
             # Enhance error message with FFmpeg output
-            error_msg = f"Conversion failed: {str(e)}\nFFmpeg output:\n{e.stderr}"
+            error_msg = f"Conversion failed with return code {e.returncode}:\n{e.stderr}"
+            raise subprocess.SubprocessError(error_msg)
+        except Exception as e:
+            # Handle any other exceptions
+            error_msg = f"Conversion failed with error: {str(e)}"
             raise subprocess.SubprocessError(error_msg)
 
     def list_profiles(self, category: Optional[str] = None) -> Dict[str, list]:
